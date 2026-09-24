@@ -1,0 +1,22 @@
+{
+  "name": "docker-panel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lightweight web panel for Docker Compose projects",
+  "type": "module",
+  "engines": {
+    "node": ">=20.12"
+  },
+  "scripts": {
+    "dev": "vite web",
+    "dev:server": "node --watch server/index.js",
+    "build": "vite build web",
+    "start": "node server/index.js",
+    "hash-password": "node server/hash-password.js"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.6",
+    "preact": "^10.29.8",
+    "vite": "^8.3.0"
+  }
+}

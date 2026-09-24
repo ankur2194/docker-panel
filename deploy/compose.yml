@@ -1,0 +1,20 @@
+# Run the panel itself as a container. Project folders must be mounted at the SAME paths
+# as on the host, because Compose resolves relative paths (build contexts, volumes) on the host.
+services:
+  docker-panel:
+    build: ..
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file: ../.env
+    environment:
+      HOST: 0.0.0.0
+      DATA_DIR: /data
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - panel-data:/data
+      - /opt/stacks:/opt/stacks
+      - /srv:/srv
+
+volumes:
+  panel-data:

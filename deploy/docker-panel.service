@@ -1,0 +1,17 @@
+# /etc/systemd/system/docker-panel.service
+[Unit]
+Description=Docker Panel
+After=network-online.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+# A user in the "docker" group (docker access is root-equivalent; keep the panel private).
+User=deploy
+WorkingDirectory=/opt/docker-panel
+ExecStart=/usr/bin/node server/index.js
+Restart=on-failure
+# Settings come from /opt/docker-panel/.env
+
+[Install]
+WantedBy=multi-user.target
