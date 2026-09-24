@@ -3,6 +3,7 @@ import { api, enc } from '../api.js';
 import { Icon } from '../icons.jsx';
 import { ErrorBanner, IconButton, Menu, StatusPill, useApp, useRefresh } from '../ui.jsx';
 import { ConfigTab, EnvTab, FilesTab, LogsTab } from './ProjectTabs.jsx';
+import { ProjectMonitor } from './Monitor.jsx';
 
 const TABS = [
   ['overview', 'Overview'],
@@ -10,6 +11,7 @@ const TABS = [
   ['env', 'Environment'],
   ['files', 'Files'],
   ['logs', 'Logs'],
+  ['monitor', 'Monitoring'],
 ];
 
 function containerState(c) {
@@ -114,6 +116,7 @@ export function Project({ id, tab, arg }) {
         {tab === 'env' && <EnvTab p={p} reload={load} initial={arg} />}
         {tab === 'files' && <FilesTab p={p} reload={load} initial={arg} />}
         {tab === 'logs' && <LogsTab p={p} initialService={arg} />}
+        {tab === 'monitor' && <ProjectMonitor p={p} />}
       </main>
     </>
   );

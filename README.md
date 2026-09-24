@@ -10,14 +10,15 @@ A small web panel for managing Docker Compose projects on one server. You can:
 - choose which **compose files** (`-f`, in order) and **env files** (`--env-file`) a project uses, plus **profiles**;
 - edit **environment variables** in a table (secrets hidden) or as raw text, and create new env files;
 - edit compose files in the browser. Changes are checked with `docker compose config` before they are saved;
-- follow **logs** for the whole project or one service.
+- follow **logs** for the whole project or one service;
+- **monitor load** for the whole server, each project and each container (CPU, memory, disk, network, disk I/O), with auto-refresh every 2s–1m and colors for light, normal, high and overload.
 
 ## Stack
 
 | Part | Choice | Why |
 |---|---|---|
 | Server | Node.js ≥ 20.12 with only built-in modules (`http`, `child_process`, `crypto`) | No runtime dependencies to install or patch |
-| UI | [Preact](https://preactjs.com) + Vite, plain CSS | About 20 KB gzipped in total |
+| UI | [Preact](https://preactjs.com) + Vite, plain CSS, inline SVG charts | About 30 KB gzipped in total |
 | Docker | Calls the `docker compose` CLI directly, without a shell | Behaves exactly like running Compose by hand, and all Compose features work |
 | Storage | A single `data/projects.json` | No database |
 
@@ -100,6 +101,36 @@ Notes:
 - Only one action can run per project at a time. If you close the browser mid-action, the action still finishes.
 - *Remove from panel* only removes the project from `projects.json`. Its containers and files are left alone.
 
+### Monitoring
+
+The *Monitor* page (and each project's *Monitoring* tab) shows live load at three levels:
+
+| Level | Source |
+|---|---|
+| Server | CPU, load average, memory and swap from `/proc`; disk space with `statfs`; network from `/proc/net/dev` (container and bridge interfaces excluded) |
+| Project | Sum of its containers, grouped by the `com.docker.compose.project` label |
+| Container | `docker stats --no-stream`, plus CPU limits from `docker inspect` |
+
+Every value is colored by load level, and the level is also written out as text:
+
+| Level | Range |
+|---|---|
+| Light | under 25% |
+| Normal | 25–60% |
+| High | 60–85% |
+| Overload | 85% and above |
+
+What the percentage means:
+
+- **Container CPU** is measured against the container's CPU limit (`cpus:`), or against all host cores if it has none. A container using 0.5 CPU with `cpus: 0.5` is therefore in overload.
+- **Container memory** is measured against its memory limit, or against host RAM.
+- **Project figures** are shares of the whole host.
+- **Load average** is the 1-minute load divided by the number of cores.
+
+Choose the refresh interval (Off, 2s, 5s, 10s, 30s or 1m) at the top of the page; the browser remembers it. Nothing is sampled in the background: stats are collected only while a monitoring view is open, and the charts show the history since the page was opened (the last 120 samples). Parallel requests share one `docker stats` run.
+
+If the panel runs in a container, the server figures come from that container's view of `/proc`. CPU, load and network then describe the host only when it uses the host's PID and network namespaces. For exact server figures, run the panel directly on the host.
+
 ## Security
 
 Access to this panel is effectively **root access on the server**: anyone who can edit a compose file can mount the host filesystem. Therefore:
@@ -120,7 +151,7 @@ npm run dev          # Vite dev server on :5173, proxies /api to :8080
 Layout:
 
 ```
-server/   index.js (HTTP + routes) · auth.js · compose.js · projects.js · config.js · hash-password.js
-web/src/  app.jsx · api.js · env.js · ui.jsx · icons.jsx · styles.css
-          pages/ Login · Dashboard · Project · ProjectTabs · NewProject · Discover
+server/   index.js (HTTP + routes) · auth.js · compose.js · projects.js · stats.js · config.js · hash-password.js
+web/src/  app.jsx · api.js · env.js · load.js · ui.jsx · monitor-ui.jsx · icons.jsx · styles.css
+          pages/ Login · Dashboard · Project · ProjectTabs · Monitor · NewProject · Discover
 ```

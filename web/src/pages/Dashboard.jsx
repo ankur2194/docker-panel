@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'preact/hooks';
 import { api, enc } from '../api.js';
 import { Icon } from '../icons.jsx';
 import { ErrorBanner, IconButton, StatusPill, useApp, useRefresh } from '../ui.jsx';
+import { fmtPct } from '../load.js';
+import { LoadPill } from '../monitor-ui.jsx';
 import { NewProjectModal } from './NewProject.jsx';
 import { DiscoverModal } from './Discover.jsx';
 
@@ -20,8 +22,10 @@ export function Dashboard() {
   const [filter, setFilter] = useState('all');
   const [modal, setModal] = useState(null);
   const [updated, setUpdated] = useState(0);
+  const [host, setHost] = useState(null);
 
   const load = useCallback(async () => {
+    api('GET', '/stats?host=1').then((s) => setHost(s.host), () => setHost(null));
     try {
       setData(await api('GET', '/projects'));
       setError('');
@@ -72,6 +76,16 @@ export function Dashboard() {
           <strong><span class="warn">{count('partial')}</span><span class="faint"> · </span><span class="off">{count('stopped')}</span></strong>
         </div>
         <div class="stat"><span>Containers up</span><strong>{up}<small class="faint"> / {total}</small></strong></div>
+        <a class="stat stat-link" href="#/monitor" aria-label="Server load, open Monitor">
+          <span class="row-6">Server load <Icon name="right" size={14} /></span>
+          {host ? (
+            <div class="server-tile">
+              <span class="faint small">CPU</span><strong class="mono">{fmtPct(host.cpu)}</strong><LoadPill pct={host.cpu} />
+              <span class="faint small">Mem</span><strong class="mono">{fmtPct((host.mem.used / host.mem.total) * 100)}</strong>
+              <LoadPill pct={(host.mem.used / host.mem.total) * 100} />
+            </div>
+          ) : <strong class="faint">—</strong>}
+        </a>
       </div>
 
       <section class="card">
