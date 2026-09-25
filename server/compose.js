@@ -63,13 +63,16 @@ export function stream(args, { cwd, onData, onExit }) {
 
 /**
  * Compose steps for each panel action. Each step is the argv tail after the project flags.
- * opts: { service, pull, noCache }
+ * opts: { services: string[], pull, noCache, recreate: 'force' | 'no' }
+ * `start` is resolved separately (startSteps), since it depends on which containers exist.
  */
 export function actionSteps(action, opts = {}) {
-  const svc = opts.service ? [opts.service] : [];
+  const svc = opts.services || [];
   switch (action) {
-    case 'start':
-      return [['up', '-d', '--remove-orphans', ...svc]];
+    case 'up': {
+      const flag = { force: ['--force-recreate'], no: ['--no-recreate'] }[opts.recreate] || [];
+      return [['up', '-d', '--remove-orphans', ...flag, ...svc]];
+    }
     case 'stop':
       return [['stop', ...svc]];
     case 'restart':
@@ -89,6 +92,54 @@ export function actionSteps(action, opts = {}) {
     default:
       return null;
   }
+}
+
+/**
+ * Start without recreating: `start` the services that already have containers, and create only the
+ * missing ones. --no-recreate keeps `up` from recreating their depends_on services as a side effect.
+ */
+export async function startSteps(p, services = []) {
+  const base = projectArgs(p);
+  const [cfg, ps] = await Promise.all([
+    services.length ? null : run([...base, 'config', '--services'], { cwd: p.directory }),
+    run([...base, 'ps', '-a', '--format', '{{.Service}}'], { cwd: p.directory }),
+  ]);
+  if (cfg && cfg.code !== 0) throw Object.assign(new Error(cfg.stderr.trim() || 'docker compose config failed'), { status: 422 });
+  if (ps.code !== 0) throw Object.assign(new Error(ps.stderr.trim() || 'docker compose ps failed'), { status: 502 });
+  const targets = services.length ? services : cfg.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+  const existing = new Set(ps.stdout.split('\n').map((s) => s.trim()).filter(Boolean));
+  const have = targets.filter((s) => existing.has(s));
+  const missing = targets.filter((s) => !existing.has(s));
+  const steps = [];
+  if (have.length) steps.push(['start', ...have]);
+  if (missing.length) steps.push(['up', '-d', '--no-recreate', ...missing]);
+  return steps;
+}
+
+// ---------- system-wide clean-up ----------
+
+export const PRUNE_UNTIL = ['', '24h', '168h', '720h'];
+
+/** argv for a prune, built only from whitelisted flags. Returns null for an unknown target. */
+export function pruneArgs({ target, all = false, volumes = false, until = '' }) {
+  const cmd = { builder: ['builder', 'prune'], images: ['image', 'prune'], containers: ['container', 'prune'],
+    networks: ['network', 'prune'], volumes: ['volume', 'prune'], system: ['system', 'prune'] }[target];
+  if (!cmd) return null;
+  const args = [...cmd, '-f'];
+  if (all && ['builder', 'volumes'].includes(target)) args.push('--all');
+  if (all && ['images', 'system'].includes(target)) args.push('-a');
+  if (volumes && target === 'system') args.push('--volumes');
+  if (until) args.push('--filter', `until=${until}`);
+  return args;
+}
+
+/** `docker system df` rows: Images, Containers, Local Volumes, Build Cache. */
+export async function diskUsage() {
+  const r = await run(['system', 'df', '--format', '{{json .}}'], { timeout: 60000 });
+  if (r.code !== 0) throw Object.assign(new Error(r.stderr.trim() || 'docker system df failed'), { status: 502 });
+  return parseJsonList(r.stdout).map((x) => ({
+    type: x.Type, total: Number(x.TotalCount) || 0, active: Number(x.Active) || 0, size: x.Size, reclaimable: x.Reclaimable,
+  }));
 }
 
 /** Parse `docker compose ls` / `ps` JSON, which is either an array or one object per line. */

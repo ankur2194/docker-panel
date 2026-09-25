@@ -1,6 +1,7 @@
 import { createContext } from 'preact';
 import { useContext, useEffect, useRef, useState } from 'preact/hooks';
 import { Icon } from './icons.jsx';
+import { THEMES, useTheme } from './theme.js';
 
 /** Shared app services: { runAction, info, user, logout } */
 export const AppContext = createContext(null);
@@ -58,8 +59,8 @@ export function Modal({ title, subtitle, onClose, children, footer, width = 760,
   );
 }
 
-/** A small dropdown menu: items = [{ label, onClick, danger }] */
-export function Menu({ label, icon = 'more', items, buttonClass = 'icon-btn', text }) {
+/** A small dropdown menu: items = [{ label, hint, onClick, danger, disabled, checked }] */
+export function Menu({ label, icon = 'more', items, buttonClass = 'icon-btn', text, small }) {
   const [open, setOpen] = useState(false);
   const ref = useRef();
   useEffect(() => {
@@ -75,17 +76,28 @@ export function Menu({ label, icon = 'more', items, buttonClass = 'icon-btn', te
         {text ?? <Icon name={icon} />}
       </button>
       {open && (
-        <div class="menu" role="menu">
+        <div class={`menu ${small ? 'menu-sm' : ''}`} role="menu">
           {items.filter(Boolean).map((it) => (
-            <button type="button" role="menuitem" class={it.danger ? 'danger' : ''} disabled={it.disabled}
+            <button type="button" role={it.checked === undefined ? 'menuitem' : 'menuitemradio'} aria-checked={it.checked}
+              class={`${it.danger ? 'danger' : ''} ${it.checked ? 'checked' : ''}`} disabled={it.disabled}
               onClick={() => { setOpen(false); it.onClick(); }}>
-              <span>{it.label}</span>
+              <span>{it.label}{it.checked && <Icon name="check" size={14} class="accent" />}</span>
               {it.hint && <small>{it.hint}</small>}
             </button>
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+/** Colour theme picker: System / Light / Dark. */
+export function ThemeMenu() {
+  const [pref, setPref] = useTheme();
+  const current = THEMES.find(([k]) => k === pref);
+  return (
+    <Menu label={`Theme: ${current[1]}`} icon={current[2]} buttonClass="icon-btn theme-btn" small
+      items={THEMES.map(([k, label]) => ({ label, checked: k === pref, onClick: () => setPref(k) }))} />
   );
 }
 
