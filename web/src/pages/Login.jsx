@@ -1,6 +1,7 @@
 import { useState } from 'preact/hooks';
 import { api } from '../api.js';
 import { Icon } from '../icons.jsx';
+import { ThemeMenu } from '../ui.jsx';
 
 export function Login({ onLogin }) {
   const [email, setEmail] = useState('');
@@ -22,6 +23,7 @@ export function Login({ onLogin }) {
 
   return (
     <div class="login-page">
+      <div class="login-theme"><ThemeMenu /></div>
       <main class="login-card">
         <div class="stack-14">
           <div class="logo-tile"><Icon name="logo" size={24} class="accent" /></div>

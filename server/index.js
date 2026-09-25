@@ -7,7 +7,9 @@ import { config, warnings } from './config.js';
 import * as auth from './auth.js';
 import * as projects from './projects.js';
 import { HttpError } from './projects.js';
-import { actionSteps, commandLine, projectArgs, run, SERVICE_RE, stream, versions } from './compose.js';
+import {
+  actionSteps, commandLine, diskUsage, projectArgs, PRUNE_UNTIL, pruneArgs, run, SERVICE_RE, startSteps, stream, versions,
+} from './compose.js';
 import { containerStats, hostStats, projectStats } from './stats.js';
 
 for (const w of warnings) console.warn(`[docker-panel] ${w}`);
@@ -15,6 +17,7 @@ for (const w of warnings) console.warn(`[docker-panel] ${w}`);
 const MAX_BODY = 2 * 1024 * 1024;
 const MAX_FILE = 1024 * 1024;
 const busy = new Map(); // project id -> running action name
+let pruning = false;
 
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
@@ -138,39 +141,75 @@ route('DELETE', '/api/projects/:id', async (req, res, { params }) => {
   send(res, 200, { ok: true });
 });
 
-route('POST', '/api/projects/:id/actions/:action', async (req, res, { params }) => {
-  const p = await projects.get(params.id);
-  const opts = await readBody(req);
-  if (opts.service && !SERVICE_RE.test(opts.service)) throw new HttpError(400, 'Invalid service name');
-  const steps = actionSteps(params.action, { service: opts.service, pull: !!opts.pull, noCache: !!opts.noCache });
-  if (!steps) throw new HttpError(400, `Unknown action: ${params.action}`);
-  if (busy.has(p.id)) throw new HttpError(409, `"${busy.get(p.id)}" is already running for this project`);
-
-  busy.set(p.id, params.action);
+/** Run docker argv lists one after another, streaming output as NDJSON; stops at the first failure. */
+async function streamSteps(res, steps, cwd) {
   const write = ndjson(res);
   const started = Date.now();
-  const base = projectArgs(p);
   let code = 0;
-  try {
-    for (const step of steps) {
-      const args = [...base, ...step];
-      write({ t: 'cmd', d: commandLine(args) });
-      // The action keeps running if the browser disconnects; compose operations should not be cut in half.
-      code = await new Promise((resolve) => {
-        try {
-          stream(args, { cwd: p.directory, onData: (d) => write({ t: 'out', d }), onExit: resolve });
-        } catch (e) {
-          write({ t: 'out', d: e.message + '\n' });
-          resolve(-1);
-        }
-      });
-      if (code !== 0) break;
-    }
-  } finally {
-    busy.delete(p.id);
+  for (const args of steps) {
+    write({ t: 'cmd', d: commandLine(args) });
+    // Keeps running if the browser disconnects; compose operations should not be cut in half.
+    code = await new Promise((resolve) => {
+      try {
+        stream(args, { cwd, onData: (d) => write({ t: 'out', d }), onExit: resolve });
+      } catch (e) {
+        write({ t: 'out', d: e.message + '\n' });
+        resolve(-1);
+      }
+    });
+    if (code !== 0) break;
   }
   write({ t: 'exit', code, ms: Date.now() - started });
   res.end();
+}
+
+function serviceList(opts) {
+  const list = opts.services ?? [];
+  if (!Array.isArray(list) || list.length > 200) throw new HttpError(400, 'services must be a list of service names');
+  const all = opts.service ? [...list, opts.service] : list;
+  for (const s of all) if (typeof s !== 'string' || !SERVICE_RE.test(s)) throw new HttpError(400, 'Invalid service name');
+  return [...new Set(all)];
+}
+
+route('POST', '/api/projects/:id/actions/:action', async (req, res, { params }) => {
+  const p = await projects.get(params.id);
+  const opts = await readBody(req);
+  const services = serviceList(opts);
+  const recreate = ['force', 'no'].includes(opts.recreate) ? opts.recreate : undefined;
+  if (params.action !== 'start' && !actionSteps(params.action)) throw new HttpError(400, `Unknown action: ${params.action}`);
+  if (busy.has(p.id)) throw new HttpError(409, `"${busy.get(p.id)}" is already running for this project`);
+
+  busy.set(p.id, params.action);
+  try {
+    const tails = params.action === 'start'
+      ? await startSteps(p, services)
+      : actionSteps(params.action, { services, pull: !!opts.pull, noCache: !!opts.noCache, recreate });
+    if (!tails.length) throw new HttpError(422, 'This project has no services to start');
+    const base = projectArgs(p);
+    await streamSteps(res, tails.map((t) => [...base, ...t]), p.directory);
+  } finally {
+    busy.delete(p.id);
+  }
+});
+
+route('GET', '/api/system/df', async (req, res) => send(res, 200, { rows: await diskUsage(), pruning }));
+
+route('POST', '/api/system/prune', async (req, res) => {
+  const body = await readBody(req);
+  const until = body.until ?? '';
+  if (!PRUNE_UNTIL.includes(until)) throw new HttpError(400, 'Invalid "until" filter');
+  if (until && (body.target === 'volumes' || (body.target === 'system' && body.volumes))) {
+    throw new HttpError(400, 'Docker cannot filter volumes by age');
+  }
+  const args = pruneArgs({ target: body.target, all: body.all === true, volumes: body.volumes === true, until });
+  if (!args) throw new HttpError(400, 'Unknown prune target');
+  if (pruning) throw new HttpError(409, 'A clean-up is already running');
+  pruning = true;
+  try {
+    await streamSteps(res, [args]);
+  } finally {
+    pruning = false;
+  }
 });
 
 route('GET', '/api/projects/:id/logs', async (req, res, { params, query }) => {
