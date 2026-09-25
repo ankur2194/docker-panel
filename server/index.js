@@ -8,6 +8,7 @@ import * as auth from './auth.js';
 import * as projects from './projects.js';
 import { HttpError } from './projects.js';
 import { actionSteps, commandLine, projectArgs, run, SERVICE_RE, stream, versions } from './compose.js';
+import { containerStats, hostStats, projectStats } from './stats.js';
 
 for (const w of warnings) console.warn(`[docker-panel] ${w}`);
 
@@ -84,6 +85,28 @@ route('GET', '/api/info', async (req, res) => {
     defaultProjectsDir: config.defaultProjectsDir,
     scanRoots: config.scanRoots,
   });
+});
+
+// Live load: ?host=1 (cheap, /proc only) and/or ?containers=1 (runs docker stats); ?project=<id> narrows containers.
+route('GET', '/api/stats', async (req, res, { query }) => {
+  const registered = await projects.all();
+  const out = { at: Date.now() };
+  const only = query.get('project');
+  const project = only ? await projects.get(only) : null;
+  const [host, docker] = await Promise.all([
+    query.get('host') === '1' ? hostStats(registered.map((p) => [p.name, p.directory])) : null,
+    query.get('containers') === '1' || only ? containerStats() : null,
+  ]);
+  if (host) out.host = host;
+  if (docker) {
+    const list = project ? docker.containers.filter((c) => c.project === project.name) : docker.containers;
+    out.cores = docker.cores;
+    out.memTotal = docker.memTotal;
+    out.containers = list;
+    out.projects = projectStats({ ...docker, containers: list }, project ? [project] : registered);
+    if (docker.error) out.error = docker.error;
+  }
+  send(res, 200, out);
 });
 
 route('GET', '/api/projects', async (req, res) => {

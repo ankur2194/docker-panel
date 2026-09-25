@@ -4,6 +4,7 @@ import { Icon } from './icons.jsx';
 import { AppContext, OutputDrawer, refresh } from './ui.jsx';
 import { Login } from './pages/Login.jsx';
 import { Dashboard } from './pages/Dashboard.jsx';
+import { Monitor } from './pages/Monitor.jsx';
 import { Project } from './pages/Project.jsx';
 
 const ACTION_LABEL = {
@@ -94,9 +95,10 @@ export function App() {
   if (!user) return <Login onLogin={setUser} />;
 
   const m = hash.match(/^#\/p\/([^/]+)(?:\/(\w+))?(?:\/([^/]+))?/);
+  const onMonitor = /^#\/monitor\b/.test(hash);
   const page = m
     ? <Project key={m[1]} id={decodeURIComponent(m[1])} tab={m[2] || 'overview'} arg={m[3] && decodeURIComponent(m[3])} />
-    : <Dashboard />;
+    : onMonitor ? <Monitor /> : <Dashboard />;
 
   return (
     <AppContext.Provider value={{ runAction, info, user, running: run?.code === null }}>
@@ -106,7 +108,10 @@ export function App() {
             <Icon name="logo" size={22} class="accent" />
             <span>Docker Panel</span>
           </a>
-          <nav><a href="#/" class="nav-link active">Projects</a></nav>
+          <nav class="topnav">
+            <a href="#/" class={`nav-link ${onMonitor ? '' : 'active'}`} aria-current={onMonitor ? undefined : 'page'}>Projects</a>
+            <a href="#/monitor" class={`nav-link ${onMonitor ? 'active' : ''}`} aria-current={onMonitor ? 'page' : undefined}>Monitor</a>
+          </nav>
           <div class="grow" />
           {info && (
             <span class="mono small muted hide-sm" title={info.error || ''}>
