@@ -8,7 +8,7 @@ import * as auth from './auth.js';
 import * as projects from './projects.js';
 import { HttpError } from './projects.js';
 import {
-  actionSteps, commandLine, diskUsage, projectArgs, PRUNE_UNTIL, pruneArgs, run, SERVICE_RE, startSteps, stream, versions,
+  actionSteps, commandLine, diskUsage, invalidateComposeLs, projectArgs, PRUNE_UNTIL, pruneArgs, run, SERVICE_RE, startSteps, stream, versions,
 } from './compose.js';
 import { containerStats, hostStats, projectStats } from './stats.js';
 
@@ -52,7 +52,8 @@ async function readBody(req) {
 /** Newline-delimited JSON stream: {"t":"out","d":"..."} lines, then {"t":"exit","code":0}. */
 function ndjson(res) {
   res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
-  return (obj) => { if (!res.writableEnded) res.write(JSON.stringify(obj) + '\n'); };
+  // Returns false when the socket buffer is full (see stream() in compose.js).
+  return (obj) => (res.writableEnded || res.destroyed ? true : res.write(JSON.stringify(obj) + '\n'));
 }
 
 function clientIp(req) {
@@ -151,7 +152,7 @@ async function streamSteps(res, steps, cwd) {
     // Keeps running if the browser disconnects; compose operations should not be cut in half.
     code = await new Promise((resolve) => {
       try {
-        stream(args, { cwd, onData: (d) => write({ t: 'out', d }), onExit: resolve });
+        stream(args, { cwd, res, onData: (d) => write({ t: 'out', d }), onExit: resolve });
       } catch (e) {
         write({ t: 'out', d: e.message + '\n' });
         resolve(-1);
@@ -189,6 +190,7 @@ route('POST', '/api/projects/:id/actions/:action', async (req, res, { params }) 
     await streamSteps(res, tails.map((t) => [...base, ...t]), p.directory);
   } finally {
     busy.delete(p.id);
+    invalidateComposeLs();
   }
 });
 
@@ -209,6 +211,7 @@ route('POST', '/api/system/prune', async (req, res) => {
     await streamSteps(res, [args]);
   } finally {
     pruning = false;
+    invalidateComposeLs();
   }
 });
 
@@ -225,6 +228,7 @@ route('GET', '/api/projects/:id/logs', async (req, res, { params, query }) => {
   const write = ndjson(res);
   const child = stream(args, {
     cwd: p.directory,
+    res,
     onData: (d) => write({ t: 'out', d }),
     onExit: (code) => { write({ t: 'exit', code }); res.end(); },
   });

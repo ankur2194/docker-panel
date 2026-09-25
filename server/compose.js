@@ -51,13 +51,40 @@ export function run(args, { cwd, timeout = 60000 } = {}) {
   });
 }
 
-/** Spawn docker and hand every output chunk to onData. Returns the child process. */
-export function stream(args, { cwd, onData, onExit }) {
+/**
+ * Spawn docker and hand every output chunk to onData. Returns the child process.
+ * Backpressure: when onData returns false (the client's socket buffer is full), output is paused
+ * until `res` drains, so a slow reader never makes the server buffer a whole log or build in memory.
+ * If `res` closes instead, output resumes (and is discarded by the caller) so the process can finish.
+ */
+export function stream(args, { cwd, onData, onExit, res }) {
   const child = spawn(config.dockerBin, args, { cwd, env: CHILD_ENV });
-  child.stdout.on('data', (d) => onData(d.toString()));
-  child.stderr.on('data', (d) => onData(d.toString()));
+  let paused = false;
+  const resume = () => {
+    if (!paused) return;
+    paused = false;
+    child.stdout.resume();
+    child.stderr.resume();
+  };
+  const onChunk = (d) => {
+    if (onData(d) === false && res && !res.destroyed && !paused) {
+      paused = true;
+      child.stdout.pause();
+      child.stderr.pause();
+      res.once('drain', resume);
+    }
+  };
+  if (res) res.once('close', resume);
+  child.stdout.setEncoding('utf8'); // keeps multi-byte characters whole across chunks
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', onChunk);
+  child.stderr.on('data', onChunk);
   child.on('error', (e) => onData(`\n${e.message}\n`));
-  child.on('close', (code) => onExit(code ?? -1));
+  child.on('close', (code) => {
+    res?.off('drain', resume);
+    res?.off('close', resume);
+    onExit(code ?? -1);
+  });
   return child;
 }
 
@@ -157,15 +184,39 @@ export function parseStatus(s = '') {
   return out;
 }
 
-export async function listComposeProjects() {
-  const r = await run(['compose', 'ls', '-a', '--format', 'json']);
-  if (r.code !== 0) throw new Error(r.stderr.trim() || 'docker compose ls failed');
-  return parseJsonList(r.stdout).map((x) => ({
-    name: x.Name,
-    status: x.Status,
-    counts: parseStatus(x.Status),
-    configFiles: (x.ConfigFiles || '').split(',').map((s) => s.trim()).filter(Boolean),
-  }));
+let lsCache = null; // { at, data }
+let lsInflight = null;
+let lsGen = 0;
+
+/** Drop the cached `compose ls` result (after an action changed what is running). */
+export function invalidateComposeLs() {
+  lsCache = null;
+  lsInflight = null; // a run that started before the change must not be shared or cached
+  lsGen++;
+}
+
+/**
+ * `docker compose ls -a`. Every open dashboard polls this, so concurrent callers share one run
+ * and results younger than 2 s are reused.
+ */
+export function listComposeProjects() {
+  if (lsInflight) return lsInflight;
+  if (lsCache && Date.now() - lsCache.at < 2000) return Promise.resolve(lsCache.data);
+  const gen = lsGen;
+  const p = (async () => {
+    const r = await run(['compose', 'ls', '-a', '--format', 'json']);
+    if (r.code !== 0) throw new Error(r.stderr.trim() || 'docker compose ls failed');
+    const data = parseJsonList(r.stdout).map((x) => ({
+      name: x.Name,
+      status: x.Status,
+      counts: parseStatus(x.Status),
+      configFiles: (x.ConfigFiles || '').split(',').map((s) => s.trim()).filter(Boolean),
+    }));
+    if (gen === lsGen) lsCache = { at: Date.now(), data };
+    return data;
+  })().finally(() => { if (lsInflight === p) lsInflight = null; });
+  lsInflight = p;
+  return p;
 }
 
 export async function versions() {

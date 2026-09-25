@@ -68,6 +68,15 @@ function push(key, t, values) {
 
 export const historyOf = (key) => history.get(key) || [];
 
+// Containers come and go (one-off `docker run`s, renamed projects). Forget series that have had no
+// sample for a while, so a Monitor tab left open for days does not collect every name it ever saw.
+const FORGET_AFTER = 30 * 60 * 1000;
+function prune(now) {
+  for (const [key, list] of history) {
+    if (key !== 'host' && now - list[list.length - 1].t > FORGET_AFTER) history.delete(key);
+  }
+}
+
 function record(data) {
   const t = data.at;
   const h = data.host;
@@ -82,6 +91,7 @@ function record(data) {
   }
   for (const c of data.containers || []) if (c.running) push(`c:${c.name}`, t, { cpu: c.cpuPct, mem: c.memPct });
   for (const p of data.projects || []) push(`p:${p.name ?? ''}`, t, { cpu: p.cpuPct, mem: p.memPct });
+  prune(t);
 }
 
 /**
