@@ -9,6 +9,27 @@ export const useApp = () => useContext(AppContext);
 
 export const refresh = () => window.dispatchEvent(new Event('dp:refresh'));
 
+/**
+ * Call fn every `ms` while `enabled`, skipping hidden tabs. The next call is scheduled only after
+ * the previous one settles, so a slow Docker never piles up requests.
+ */
+export function usePoll(fn, ms, enabled = true) {
+  const latest = useRef(fn);
+  latest.current = fn;
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true, timer;
+    const tick = async () => {
+      if (document.visibilityState === 'visible') {
+        try { await latest.current(); } catch { /* the page shows its own errors */ }
+      }
+      if (alive) timer = setTimeout(tick, ms);
+    };
+    timer = setTimeout(tick, ms);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [ms, enabled]);
+}
+
 export function useRefresh(fn) {
   useEffect(() => {
     window.addEventListener('dp:refresh', fn);
@@ -104,15 +125,21 @@ export function ThemeMenu() {
 export function OutputDrawer({ run, onClose }) {
   const pre = useRef();
   const [copied, setCopied] = useState(false);
+  // Follow new output unless the user scrolled up to read. Whether we are "at the bottom" is decided
+  // on scroll, before new output lands; measuring after a big chunk arrived would always say no.
+  const stick = useRef(true);
+  const onScroll = (e) => {
+    const el = e.currentTarget;
+    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
   useEffect(() => {
-    const el = pre.current;
-    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 80) el.scrollTop = el.scrollHeight;
-  }, [run.text]);
+    if (pre.current && stick.current) pre.current.scrollTop = pre.current.scrollHeight;
+  }, [run.parts]);
   useEffect(() => {
     if (pre.current) pre.current.scrollTop = pre.current.scrollHeight;
   }, []);
   const copy = async () => {
-    await navigator.clipboard?.writeText(run.text);
+    await navigator.clipboard?.writeText(run.parts.map((p) => (p.cmd ? `$ ${p.text}\n` : p.text)).join(''));
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   };
@@ -130,7 +157,7 @@ export function OutputDrawer({ run, onClose }) {
         <button type="button" class="btn sm" onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
         <IconButton icon="x" label="Close output" onClick={onClose} disabled={run.code === null} />
       </div>
-      <pre ref={pre} class="drawer-body" role="log">
+      <pre ref={pre} class="drawer-body" role="log" onScroll={onScroll}>
         {run.parts.map((p) => (p.cmd ? <span class="cmd">$ {p.text}{'\n'}</span> : p.text))}
       </pre>
     </section>

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'preact/hooks';
 import { api, enc } from '../api.js';
 import { Icon } from '../icons.jsx';
-import { ErrorBanner, IconButton, StatusPill, useApp, useRefresh } from '../ui.jsx';
+import { ErrorBanner, IconButton, StatusPill, useApp, usePoll, useRefresh } from '../ui.jsx';
 import { fmtPct } from '../load.js';
 import { LoadPill } from '../monitor-ui.jsx';
 import { NewProjectModal } from './NewProject.jsx';
@@ -25,7 +25,7 @@ export function Dashboard() {
   const [host, setHost] = useState(null);
 
   const load = useCallback(async () => {
-    api('GET', '/stats?host=1').then((s) => setHost(s.host), () => setHost(null));
+    const host = api('GET', '/stats?host=1').then((s) => setHost(s.host), () => setHost(null));
     try {
       setData(await api('GET', '/projects'));
       setError('');
@@ -33,13 +33,11 @@ export function Dashboard() {
     } catch (e) {
       setError(e.message);
     }
+    await host;
   }, []);
 
-  useEffect(() => {
-    load();
-    const t = setInterval(() => document.visibilityState === 'visible' && load(), 5000);
-    return () => clearInterval(t);
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
+  usePoll(load, 5000);
   useRefresh(load);
 
   const projects = data?.projects || [];

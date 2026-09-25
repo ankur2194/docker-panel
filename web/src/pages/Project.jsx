@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { api, enc } from '../api.js';
 import { Icon } from '../icons.jsx';
-import { ErrorBanner, IconButton, Menu, StatusPill, useApp, useRefresh } from '../ui.jsx';
+import { ErrorBanner, IconButton, Menu, StatusPill, useApp, usePoll, useRefresh } from '../ui.jsx';
 import { ConfigTab, EnvTab, FilesTab, LogsTab } from './ProjectTabs.jsx';
 import { ProjectMonitor } from './Monitor.jsx';
 
@@ -66,11 +66,7 @@ export function Project({ id, tab, arg }) {
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => {
-    if (tab !== 'overview') return;
-    const t = setInterval(() => document.visibilityState === 'visible' && load(), 5000);
-    return () => clearInterval(t);
-  }, [tab, load]);
+  usePoll(load, 5000, tab === 'overview');
   useRefresh(load);
 
   if (!p) {

@@ -102,7 +102,13 @@ export function loginBlocked(ip) {
   return f.count >= 10;
 }
 
+const MAX_TRACKED = 10_000;
+
 export function recordFailure(ip) {
+  // Forget expired entries here, so IPs that fail once and never return don't accumulate.
+  const now = Date.now();
+  for (const [k, v] of failures) if (now - v.first > WINDOW) failures.delete(k);
+  if (failures.size >= MAX_TRACKED && !failures.has(ip)) failures.delete(failures.keys().next().value); // oldest first
   const f = failures.get(ip);
   if (!f || Date.now() - f.first > WINDOW) failures.set(ip, { count: 1, first: Date.now() });
   else f.count++;

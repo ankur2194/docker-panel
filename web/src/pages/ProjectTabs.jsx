@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { api, enc, stream } from '../api.js';
 import { isSecretKey, parseEnv, serializeEnv } from '../env.js';
 import { Icon } from '../icons.jsx';
@@ -404,6 +404,14 @@ export function FilesTab({ p, reload, initial }) {
 /* ---------------- Logs ---------------- */
 
 const MAX_LINES = 5000;
+const MAX_PARTIAL = 64 * 1024; // a "line" with no newline yet (progress output) is cut here
+
+let lineSeq = 0;
+/** Split "service-1  | text" once on arrival instead of on every render; `id` keys the row. */
+function logLine(raw) {
+  const m = raw.match(/^(\S+)\s+\|\s?(.*)$/);
+  return { id: ++lineSeq, raw, svc: m ? m[1] : null, color: m ? colorFor(m[1]) : null, text: m ? m[2] : raw };
+}
 
 export function LogsTab({ p, initialService }) {
   const services = uniq([...p.services, ...p.containers.map((c) => c.service)]);
@@ -420,15 +428,26 @@ export function LogsTab({ p, initialService }) {
     const ctrl = new AbortController();
     let buf = [];
     let partial = '';
-    let frame = 0;
+    let timer = 0;
     const flush = () => {
-      frame = 0;
+      clearTimeout(timer);
+      timer = 0;
       const add = buf;
       buf = [];
       setLines((prev) => {
         const next = prev.concat(add);
         return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next;
       });
+    };
+    // Batch updates: repainting a tall log box is the expensive part, so a chatty service is drawn
+    // a few times a second rather than on every chunk. A timer (not requestAnimationFrame) keeps
+    // flushing in background tabs, and `buf` is trimmed as lines arrive, so it stays bounded.
+    const schedule = () => {
+      if (!timer) timer = setTimeout(flush, document.hidden ? 1000 : 150);
+    };
+    const add = (raws) => {
+      for (const r of raws) buf.push(logLine(r));
+      if (buf.length > MAX_LINES) buf.splice(0, buf.length - MAX_LINES);
     };
     setLines([]);
     setStatus(follow ? 'following' : 'loading');
@@ -438,30 +457,36 @@ export function LogsTab({ p, initialService }) {
       if (ev.t === 'out') {
         const parts = (partial + ev.d).split('\n');
         partial = parts.pop();
-        buf.push(...parts);
-        if (!frame) frame = requestAnimationFrame(flush);
+        if (partial.length > MAX_PARTIAL) {
+          parts.push(partial);
+          partial = '';
+        }
+        add(parts);
+        schedule();
       } else if (ev.t === 'exit') {
-        if (partial) buf.push(partial);
+        if (partial) add([partial]);
         partial = '';
         flush();
         setStatus('ended');
       }
     }, ctrl.signal).catch((e) => { if (e.name !== 'AbortError') setStatus(`error: ${e.message}`); });
-    return () => { ctrl.abort(); cancelAnimationFrame(frame); };
+    return () => { ctrl.abort(); clearTimeout(timer); };
   }, [p.id, service, tail, follow, timestamps]);
 
   const shown = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    return q ? lines.filter((l) => l.toLowerCase().includes(q)) : lines;
+    return q ? lines.filter((l) => l.raw.toLowerCase().includes(q)) : lines;
   }, [lines, filter]);
 
-  useEffect(() => {
+  // Before paint: trimming old rows makes the browser's scroll anchoring pull the view up by the
+  // removed height, which would show as a jump for one frame.
+  useLayoutEffect(() => {
     const el = box.current;
     if (el && follow) el.scrollTop = el.scrollHeight;
   }, [shown, follow]);
 
   const download = () => {
-    const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/plain' }));
+    const url = URL.createObjectURL(new Blob([lines.map((l) => l.raw).join('\n')], { type: 'text/plain' }));
     const a = Object.assign(document.createElement('a'), { href: url, download: `${p.name}${service ? '-' + service : ''}.log` });
     a.click();
     URL.revokeObjectURL(url);
@@ -493,12 +518,9 @@ export function LogsTab({ p, initialService }) {
         <IconButton icon="download" label="Download logs" onClick={download} />
       </div>
       <div class="log-box" ref={box} role="log" aria-label="Container logs">
-        {shown.map((l) => {
-          const m = l.match(/^(\S+)\s+\|\s?(.*)$/);
-          return m
-            ? <div class="log-line"><span class="log-svc" style={{ color: colorFor(m[1]) }}>{m[1]} |</span><span>{m[2]}</span></div>
-            : <div class="log-line"><span>{l}</span></div>;
-        })}
+        {shown.map((l) => (l.svc
+          ? <div class="log-line" key={l.id}><span class="log-svc" style={{ color: l.color }}>{l.svc} |</span><span>{l.text}</span></div>
+          : <div class="log-line" key={l.id}><span>{l.text}</span></div>))}
         <div class="log-status small faint">
           {status === 'following' && <><span class="dot live" /> Following · docker compose logs -f</>}
           {status === 'loading' && 'Loading…'}

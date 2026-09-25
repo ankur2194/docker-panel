@@ -133,6 +133,7 @@ export async function update(id, patch) {
 }
 
 export async function remove(id) {
+  servicesCache.delete(id);
   const list = await load();
   const i = list.findIndex((p) => p.id === id);
   if (i < 0) throw new HttpError(404, 'Project not found');
@@ -248,13 +249,41 @@ export async function discover() {
   return { candidates: out, scanRoots: config.scanRoots, dockerError };
 }
 
+// `config --services` only changes with the compose/env files, but the project page polls every 5 s.
+// Cache it per project, keyed by the compose flags and the files' mtimes and sizes. The TTL covers
+// files reached indirectly (include:, extends:).
+const servicesCache = new Map(); // id -> { key, at, result }
+const SERVICES_TTL = 60_000;
+
+async function configKey(p) {
+  const files = [
+    ...(p.composeFiles.length ? p.composeFiles : DEFAULT_COMPOSE),
+    ...(p.envFiles.length ? p.envFiles : ['.env']),
+  ];
+  const stamps = await Promise.all(files.map((f) =>
+    fs.stat(path.resolve(p.directory, f)).then((st) => `${st.mtimeMs}:${st.size}`, () => '-')));
+  return JSON.stringify([projectArgs(p), stamps]);
+}
+
+async function configServices(p) {
+  const key = await configKey(p);
+  const hit = servicesCache.get(p.id);
+  if (hit && hit.key === key && Date.now() - hit.at < SERVICES_TTL) return hit.result;
+  const r = await run([...projectArgs(p), 'config', '--services'], { cwd: p.directory });
+  const result = r.code === 0
+    ? { services: r.stdout.split('\n').filter(Boolean), configError: null }
+    : { services: [], configError: r.stderr.trim() };
+  servicesCache.set(p.id, { key, at: Date.now(), result });
+  return result;
+}
+
 /** Everything the project page needs: config, files on disk, services and containers. */
 export async function details(id) {
   const p = await get(id);
   const args = projectArgs(p);
-  const [ps, services, entries] = await Promise.all([
+  const [ps, cfg, entries] = await Promise.all([
     run([...args, 'ps', '-a', '--format', 'json'], { cwd: p.directory }),
-    run([...args, 'config', '--services'], { cwd: p.directory }),
+    configServices(p),
     fs.readdir(p.directory, { withFileTypes: true }).catch(() => []),
   ]);
   let containers = [];
@@ -269,8 +298,8 @@ export async function details(id) {
     directoryExists: entries.length > 0 || existsSync(p.directory),
     availableComposeFiles: files.filter((f) => COMPOSE_FILE_RE.test(f)),
     availableEnvFiles: files.filter((f) => ENV_FILE_RE.test(f)),
-    services: services.code === 0 ? services.stdout.split('\n').filter(Boolean) : [],
-    configError: services.code === 0 ? null : services.stderr.trim(),
+    services: cfg.services,
+    configError: cfg.configError,
     containers: containers.map((c) => ({
       name: c.Name,
       service: c.Service,
